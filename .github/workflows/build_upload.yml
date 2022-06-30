@@ -100,6 +100,10 @@ jobs:
         continue-on-error: true
         run: docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: fail
+        continue-on-error: true
+        run: docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }}
+
       - name: end
         run: |
           echo "Hello"
