@@ -93,13 +93,12 @@ jobs:
           echo vars.job_url = ${{steps.vars.outputs.job_url}}
           echo ftp_url = ftp://${{secrets.FTP_HOST}}/${{steps.vars.outputs.repo_name}}/${{steps.vars.outputs.artifact_name}}
 
-      - name : succes
-        run : echo "succes"
+      - name: succes
+        run: echo "succes"
 
-      - name: fail 
-      continue-on-error: true
-        run : docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }}
-
+      - name: fail
+        continue-on-error: true
+        run: docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }}
 
       - name: end
         run: |
