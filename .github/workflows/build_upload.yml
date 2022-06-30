@@ -122,12 +122,9 @@ jobs:
 
       - name: Publish the Docker image
         if: ${{ github.ref_type == 'tag' && github.event_name == 'create' }}
+        continue-on-error: true
         run: |
-          docker build . --file dockerfile --tag filvenus/venus-auth:latest
-          docker tag filvenus/venus-auth:latest filvenus/venus-auth:${{steps.vars.outputs.github_tag }}
-          docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }} 
-          docker push filvenus/venus-auth:${{steps.vars.outputs.github_tag }}
-          docker push filvenus/venus-auth:latest
+          docker login --username=filvenus --password ${{ secrets.DOCKER_PASSWORD }}
 
       - name: test
         run: |
