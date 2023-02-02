@@ -293,7 +293,7 @@ func (s *mysqlStore) DelRateLimit(name, id string) error {
 func (s *mysqlStore) GetUserByMiner(miner address.Address) (*User, error) {
 	var user User
 	if err := s.db.Model(&Miner{}).Select("users.*").
-		Joins("inner join users on miners.`miner` = ? and users.`name` = miners.`user` and users.`is_deleted` IS NULL", storedAddress(miner)).
+		Joins("inner join users on miners.`miner` = ? and users.`name` = miners.`user` and users.`is_deleted` = ?", storedAddress(miner), core.NotDelete).
 		Scan(&user).Error; err != nil {
 		return nil, err
 	}
@@ -508,6 +508,15 @@ func (s *mysqlStore) MigrateToV3() error {
 			}
 
 			if err := tx.Exec("alter table `miners` add column `id` bigint(20) not null auto_increment primary key first;").Error; err != nil {
+				return err
+			}
+
+			// normal index to unique index
+			if err := tx.Exec("alter table `miners` drop index `user_miner_idx`;").Error; err != nil {
+				return err
+			}
+
+			if err := tx.Exec("alter table `miners` add unique index `miner_idx` (`miner`);").Error; err != nil {
 				return err
 			}
 		}
