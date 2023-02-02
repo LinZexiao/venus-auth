@@ -7,14 +7,40 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/venus-auth/auth"
-	"github.com/filecoin-project/venus-auth/core"
-	"github.com/filecoin-project/venus-auth/errcode"
 	"github.com/go-resty/resty/v2"
 	"go.opencensus.io/trace"
 	"golang.org/x/xerrors"
+
+	"github.com/filecoin-project/go-address"
+
+	"github.com/filecoin-project/venus-auth/auth"
+	"github.com/filecoin-project/venus-auth/core"
+	"github.com/filecoin-project/venus-auth/errcode"
 )
+
+type IAuthClient interface {
+	VerifyUsers(names []string) error
+	HasUser(req *auth.HasUserRequest) (bool, error)
+	GetUser(req *auth.GetUserRequest) (*auth.OutputUser, error)
+	GetUserByMiner(req *auth.GetUserByMinerRequest) (*auth.OutputUser, error)
+	GetUserBySigner(signer string) (auth.ListUsersResponse, error)
+	ListUsers(req *auth.ListUsersRequest) (auth.ListUsersResponse, error)
+	ListUsersWithMiners(req *auth.ListUsersRequest) (auth.ListUsersResponse, error)
+	GetUserRateLimit(name, id string) (auth.GetUserRateLimitResponse, error)
+
+	MinerExistInUser(user, miner string) (bool, error)
+	SignerExistInUser(user, signer string) (bool, error)
+
+	HasMiner(req *auth.HasMinerRequest) (bool, error)
+	ListMiners(user string) (auth.ListMinerResp, error)
+
+	HasSigner(signer string) (bool, error)
+	ListSigners(user string) (auth.ListSignerResp, error)
+	RegisterSigners(user string, addrs []string) error
+	UnregisterSigners(user string, addrs []string) error
+}
+
+var _ IAuthClient = (*AuthClient)(nil)
 
 type AuthClient struct {
 	cli *resty.Client
@@ -35,7 +61,6 @@ func (lc *AuthClient) Verify(ctx context.Context, token string) (*auth.VerifyRes
 	resp, err := lc.cli.R().SetContext(ctx).
 		SetBody(auth.VerifyRequest{Token: token}).
 		SetResult(&auth.VerifyResponse{}).Post("/verify")
-
 	if err != nil {
 		return nil, err
 	}
@@ -156,11 +181,9 @@ func (lc *AuthClient) UpdateUser(req *auth.UpdateUserRequest) error {
 
 func (lc *AuthClient) ListUsers(req *auth.ListUsersRequest) (auth.ListUsersResponse, error) {
 	resp, err := lc.cli.R().SetQueryParams(map[string]string{
-		"skip":       strconv.FormatInt(req.Skip, 10),
-		"limit":      strconv.FormatInt(req.Limit, 10),
-		"sourceType": strconv.Itoa(req.SourceType),
-		"state":      strconv.Itoa(req.State),
-		"keySum":     strconv.Itoa(req.KeySum),
+		"skip":  strconv.FormatInt(req.Skip, 10),
+		"limit": strconv.FormatInt(req.Limit, 10),
+		"state": strconv.Itoa(req.State),
 	}).SetResult(&auth.ListUsersResponse{}).SetError(&errcode.ErrMsg{}).Get("/user/list")
 	if err != nil {
 		return nil, err
@@ -191,33 +214,33 @@ func (lc *AuthClient) ListUsersWithMiners(req *auth.ListUsersRequest) (auth.List
 				continue
 			}
 			user.Miners = append(user.Miners, &auth.OutputMiner{
-				Miner:     addr.String(),
-				User:      user.Name,
-				CreatedAt: time.Time{},
-				UpdatedAt: time.Time{},
+				Miner:      addr.String(),
+				User:       user.Name,
+				OpenMining: val.OpenMining,
+				CreatedAt:  time.Time{},
+				UpdatedAt:  time.Time{},
 			})
 		}
 	}
 	return resp, nil
 }
 
+func (lc *AuthClient) VerifyUsers(names []string) error {
+	resp, err := lc.cli.R().SetBody(&auth.VerifyUsersReq{Names: names}).
+		SetError(&errcode.ErrMsg{}).Post("/user/verify")
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return nil
+	}
+	return resp.Error().(*errcode.ErrMsg).Err()
+}
+
 func (lc *AuthClient) GetUser(req *auth.GetUserRequest) (*auth.OutputUser, error) {
 	resp, err := lc.cli.R().SetQueryParams(map[string]string{
 		"name": req.Name,
 	}).SetResult(&auth.OutputUser{}).SetError(&errcode.ErrMsg{}).Get("/user")
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode() == http.StatusOK {
-		return resp.Result().(*auth.OutputUser), nil
-	}
-	return nil, resp.Error().(*errcode.ErrMsg).Err()
-}
-
-func (lc *AuthClient) GetUserByMiner(req *auth.GetUserByMinerRequest) (*auth.OutputUser, error) {
-	resp, err := lc.cli.R().SetQueryParams(map[string]string{
-		"miner": req.Miner,
-	}).SetResult(&auth.OutputUser{}).SetError(&errcode.ErrMsg{}).Get("/miner")
 	if err != nil {
 		return nil, err
 	}
@@ -236,22 +259,7 @@ func (lc *AuthClient) HasUser(req *auth.HasUserRequest) (bool, error) {
 		return false, err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*bool)), nil
-	}
-	return false, resp.Error().(*errcode.ErrMsg).Err()
-}
-
-func (lc *AuthClient) HasMiner(req *auth.HasMinerRequest) (bool, error) {
-	var has bool
-	resp, err := lc.cli.R().SetQueryParams(map[string]string{
-		"miner": req.Miner,
-	}).SetResult(&has).SetError(&errcode.ErrMsg{}).Get("/miner/has-miner")
-	if err != nil {
-		return false, err
-	}
-
-	if resp.StatusCode() == http.StatusOK {
-		return *resp.Result().(*bool), nil
+		return has, nil
 	}
 	return false, resp.Error().(*errcode.ErrMsg).Err()
 }
@@ -279,7 +287,6 @@ func (lc *AuthClient) RecoverUser(req *auth.RecoverUserRequest) error {
 }
 
 func (lc *AuthClient) GetUserRateLimit(name, id string) (auth.GetUserRateLimitResponse, error) {
-	var res auth.GetUserRateLimitResponse
 	param := make(map[string]string)
 	if len(name) != 0 {
 		param["name"] = name
@@ -287,8 +294,9 @@ func (lc *AuthClient) GetUserRateLimit(name, id string) (auth.GetUserRateLimitRe
 	if len(id) != 0 {
 		param["id"] = id
 	}
+
 	resp, err := lc.cli.R().SetQueryParams(param).
-		SetResult(&res).
+		SetResult(&auth.GetUserRateLimitResponse{}).
 		SetError(&errcode.ErrMsg{}).
 		Get("/user/ratelimit")
 	if err != nil {
@@ -307,7 +315,7 @@ func (lc *AuthClient) UpsertUserRateLimit(req *auth.UpsertUserRateLimitReq) (str
 		return "", err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*string)), nil
+		return res, nil
 	}
 	return "", resp.Error().(*errcode.ErrMsg).Err()
 }
@@ -319,23 +327,55 @@ func (lc *AuthClient) DelUserRateLimit(req *auth.DelUserRateLimitReq) (string, e
 		return "", err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*string)), nil
+		return id, nil
 	}
 	return "", resp.Error().(*errcode.ErrMsg).Err()
 }
 
-func (lc *AuthClient) UpsertMiner(user, miner string) (bool, error) {
+func (lc *AuthClient) UpsertMiner(user, miner string, openMining bool) (bool, error) {
 	if _, err := address.NewFromString(miner); err != nil {
 		return false, xerrors.Errorf("invalid miner address:%s", miner)
 	}
+
 	var isCreate bool
-	resp, err := lc.cli.R().SetBody(&auth.UpsertMinerReq{Miner: miner, User: user}).
-		SetResult(&isCreate).SetError(&errcode.ErrMsg{}).Post("/miner/add-miner")
+	resp, err := lc.cli.R().SetBody(&auth.UpsertMinerReq{Miner: miner, User: user, OpenMining: &openMining}).
+		SetResult(&isCreate).SetError(&errcode.ErrMsg{}).Post("/user/miner/add")
 	if err != nil {
 		return false, err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*bool)), nil
+		return isCreate, nil
+	}
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) HasMiner(req *auth.HasMinerRequest) (bool, error) {
+	var has bool
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"miner": req.Miner,
+	}).SetResult(&has).SetError(&errcode.ErrMsg{}).Get("/miner/has")
+	if err != nil {
+		return false, err
+	}
+
+	if resp.StatusCode() == http.StatusOK {
+		return has, nil
+	}
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) MinerExistInUser(user, miner string) (bool, error) {
+	var has bool
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"miner": miner,
+		"user":  user,
+	}).SetResult(&has).SetError(&errcode.ErrMsg{}).Get("/user/miner/exist")
+	if err != nil {
+		return false, err
+	}
+
+	if resp.StatusCode() == http.StatusOK {
+		return has, nil
 	}
 	return false, resp.Error().(*errcode.ErrMsg).Err()
 }
@@ -343,12 +383,12 @@ func (lc *AuthClient) UpsertMiner(user, miner string) (bool, error) {
 func (lc *AuthClient) ListMiners(user string) (auth.ListMinerResp, error) {
 	var res auth.ListMinerResp
 	resp, err := lc.cli.R().SetQueryParams(map[string]string{"user": user}).
-		SetResult(&res).SetError(&errcode.ErrMsg{}).Get("/miner/list-by-user")
+		SetResult(&res).SetError(&errcode.ErrMsg{}).Get("/user/miner/list")
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*auth.ListMinerResp)), nil
+		return res, nil
 	}
 	return nil, resp.Error().(*errcode.ErrMsg).Err()
 }
@@ -358,14 +398,125 @@ func (lc *AuthClient) DelMiner(miner string) (bool, error) {
 		return false, xerrors.Errorf("invalid miner address:%s", miner)
 	}
 
-	var res bool
+	var has bool
 	resp, err := lc.cli.R().SetBody(auth.DelMinerReq{Miner: miner}).
-		SetResult(&res).SetError(&errcode.ErrMsg{}).Post("/miner/del")
+		SetResult(&has).SetError(&errcode.ErrMsg{}).Post("/user/miner/del")
 	if err != nil {
-		return res, err
+		return false, err
 	}
 	if resp.StatusCode() == http.StatusOK {
-		return *(resp.Result().(*bool)), nil
+		return has, nil
 	}
-	return res, resp.Error().(*errcode.ErrMsg).Err()
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) GetUserByMiner(req *auth.GetUserByMinerRequest) (*auth.OutputUser, error) {
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"miner": req.Miner,
+	}).SetResult(&auth.OutputUser{}).SetError(&errcode.ErrMsg{}).Get("/user/miner")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return resp.Result().(*auth.OutputUser), nil
+	}
+	return nil, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) RegisterSigners(user string, addrs []string) error {
+	resp, err := lc.cli.R().SetBody(&auth.RegisterSignersReq{Signers: addrs, User: user}).
+		SetError(&errcode.ErrMsg{}).Post("/user/signer/register")
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return nil
+	}
+	return resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) SignerExistInUser(user, signer string) (bool, error) {
+	var has bool
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"signer": signer,
+		"user":   user,
+	}).SetResult(&has).SetError(&errcode.ErrMsg{}).Get("/user/signer/exist")
+	if err != nil {
+		return false, err
+	}
+
+	if resp.StatusCode() == http.StatusOK {
+		return has, nil
+	}
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) ListSigners(user string) (auth.ListSignerResp, error) {
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{"user": user}).
+		SetResult(&auth.ListSignerResp{}).SetError(&errcode.ErrMsg{}).Get("/user/signer/list")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return *(resp.Result().(*auth.ListSignerResp)), nil
+	}
+	return nil, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) UnregisterSigners(user string, addrs []string) error {
+	resp, err := lc.cli.R().SetBody(&auth.UnregisterSignersReq{Signers: addrs, User: user}).
+		SetError(&errcode.ErrMsg{}).Post("/user/signer/unregister")
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() == http.StatusOK {
+		return nil
+	}
+	return resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) HasSigner(signer string) (bool, error) {
+	var has bool
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"signer": signer,
+	}).SetResult(&has).SetError(&errcode.ErrMsg{}).Get("/signer/has")
+	if err != nil {
+		return false, err
+	}
+
+	if resp.StatusCode() == http.StatusOK {
+		return has, nil
+	}
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) DelSigner(signer string) (bool, error) {
+	if _, err := address.NewFromString(signer); err != nil {
+		return false, xerrors.Errorf("invalid signer address:%s", signer)
+	}
+
+	var has bool
+	resp, err := lc.cli.R().SetBody(auth.DelSignerReq{Signer: signer}).
+		SetResult(&has).SetError(&errcode.ErrMsg{}).Post("/signer/del")
+	if err != nil {
+		return false, err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return has, nil
+	}
+	return false, resp.Error().(*errcode.ErrMsg).Err()
+}
+
+func (lc *AuthClient) GetUserBySigner(signer string) (auth.ListUsersResponse, error) {
+	resp, err := lc.cli.R().SetQueryParams(map[string]string{
+		"signer": signer,
+	}).SetResult(&auth.ListUsersResponse{}).SetError(&errcode.ErrMsg{}).Get("/user/signer")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode() == http.StatusOK {
+		return *(resp.Result().(*auth.ListUsersResponse)), nil
+	}
+	return nil, resp.Error().(*errcode.ErrMsg).Err()
 }
