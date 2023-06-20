@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    uses: filecoin-project/venus/.github/workflows/common_build_upload.yml@master
+    uses: filecoin-project/venus/.github/workflows/common_build_upload.yml@chore/fix-ci-upload-an-wrong-url-to-god-eye
     with:
       bin_name: 'sophon-auth'
       has_ffi: false
@@ -21,3 +21,6 @@ jobs:
       FTP_PWD: ${{secrets.FTP_PWD}}
       GODEYE_URL: ${{secrets.GODEYE_URL}}
       token: ${{github.token}}
+
+
+      
