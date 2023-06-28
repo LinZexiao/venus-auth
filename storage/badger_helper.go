@@ -2,12 +2,13 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dgraph-io/badger/v3"
 	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/venus-auth/log"
+	"github.com/ipfs-force-community/sophon-auth/log"
 	"golang.org/x/xerrors"
 )
 
@@ -88,7 +89,7 @@ func (s *badgerStore) isExist(obj deleteVerify) (bool, error) {
 		key := obj.key()
 		val, err := txn.Get(key)
 		if err != nil {
-			if xerrors.Is(err, badger.ErrKeyNotFound) {
+			if errors.Is(err, badger.ErrKeyNotFound) {
 				exist = false
 				return nil
 			}
@@ -174,7 +175,7 @@ func (s *badgerStore) Version() (uint64, error) {
 	var version StoreVersion
 	err := s.getObj(storeVersionKey, &version)
 	if err != nil {
-		if xerrors.Is(err, badger.ErrKeyNotFound) {
+		if errors.Is(err, badger.ErrKeyNotFound) {
 			return 0, nil
 		}
 		return 0, err
@@ -207,13 +208,13 @@ func (s *badgerStore) MigrateToV1() error {
 		}
 
 		for _, u := range users {
-			maddr, err := address.NewFromString(u.Miner)
-			if err != nil || maddr.Empty() {
+			mAddr, err := address.NewFromString(u.Miner)
+			if err != nil || mAddr.Empty() {
 				log.Warnf("won't migrate miner:%s, invalid miner address", u.Miner)
 				continue
 			}
 			b, err := (&Miner{
-				Miner:        storedAddress(maddr),
+				Miner:        storedAddress(mAddr),
 				User:         u.Name,
 				OrmTimestamp: OrmTimestamp{CreatedAt: now, UpdatedAt: now},
 			}).Bytes()

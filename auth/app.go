@@ -1,16 +1,25 @@
 package auth
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"golang.org/x/xerrors"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/filecoin-project/venus-auth/config"
+	"github.com/ipfs-force-community/sophon-auth/config"
+	"github.com/ipfs-force-community/sophon-auth/core"
 )
 
+// DefaultAdminToken is the default admin token which is for local client user
+const DefaultAdminTokenName = "defaultLocalToken"
+
 type OAuthApp interface {
+	verify(token string) (*JWTPayload, error)
+	GetDefaultAdminToken() (string, error)
+
 	Verify(c *gin.Context)
 	GenerateToken(c *gin.Context)
 	RemoveToken(c *gin.Context)
@@ -52,8 +61,8 @@ type oauthApp struct {
 	srv OAuthService
 }
 
-func NewOAuthApp(secret, dbPath string, cnf *config.DBConfig) (OAuthApp, error) {
-	srv, err := NewOAuthService(secret, dbPath, cnf)
+func NewOAuthApp(dbPath string, cnf *config.DBConfig) (OAuthApp, error) {
+	srv, err := NewOAuthService(dbPath, cnf)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +86,39 @@ func Response(c *gin.Context, err error) {
 		return
 	}
 	c.AbortWithStatus(http.StatusOK)
+}
+
+// verify only called by inner, so use readCtx constant to bypass perm check
+func (o *oauthApp) verify(token string) (*JWTPayload, error) {
+	return o.srv.Verify(core.CtxWithPerm(context.Background(), core.PermRead), token)
+}
+
+func (o *oauthApp) GetDefaultAdminToken() (string, error) {
+	adminCtx := core.CtxWithPerm(context.Background(), core.PermAdmin)
+	// if not found, create one
+	token, err := o.srv.GetTokenByName(adminCtx, DefaultAdminTokenName)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range token {
+		if t.Perm == core.PermAdmin {
+			return t.Token, nil
+		}
+	}
+	// create one
+	_, err = o.srv.CreateUser(adminCtx, &CreateUserRequest{Name: DefaultAdminTokenName})
+	if err != nil {
+		return "", fmt.Errorf("create default user for admin token: %w", err)
+	}
+	ret, err := o.srv.GenerateToken(adminCtx, &JWTPayload{
+		Name: DefaultAdminTokenName,
+		Perm: core.PermAdmin,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create default admin token: %w", err)
+	}
+
+	return ret, nil
 }
 
 func (o *oauthApp) Verify(c *gin.Context) {
@@ -112,6 +154,7 @@ func (o *oauthApp) GenerateToken(c *gin.Context) {
 	})
 	if err != nil {
 		BadResponse(c, err)
+		return
 	}
 	output := &GenTokenResponse{
 		Token: res,

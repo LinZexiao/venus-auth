@@ -2,38 +2,31 @@ package jwtclient
 
 import (
 	"context"
-	"crypto/rand"
-	"io"
-	"io/ioutil"
 
-	"github.com/filecoin-project/venus-auth/core"
-
-	"github.com/filecoin-project/go-jsonrpc/auth"
+	"github.com/ipfs-force-community/sophon-auth/core"
 )
 
 type IJwtAuthClient interface {
-	Verify(ctx context.Context, token string) ([]auth.Permission, error)
+	Verify(ctx context.Context, token string) (core.Permission, error)
 }
 
 type jwtAuthClient struct {
-	*AuthClient
+	IAuthClient
 }
 
 var _ IJwtAuthClient = &jwtAuthClient{}
 
-func (c *jwtAuthClient) Verify(ctx context.Context, token string) ([]auth.Permission, error) {
-	res, err := c.AuthClient.Verify(ctx, token)
+func (c *jwtAuthClient) Verify(ctx context.Context, token string) (core.Permission, error) {
+	res, err := c.IAuthClient.Verify(ctx, token)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	jwtPerms := core.AdaptOldStrategy(res.Perm)
-	perms := make([]auth.Permission, len(jwtPerms))
-	copy(perms, jwtPerms)
-	return perms, nil
+
+	return res.Perm, nil
 }
 
-func WarpIJwtAuthClient(cli *AuthClient) IJwtAuthClient {
-	return &jwtAuthClient{AuthClient: cli}
+func WarpIJwtAuthClient(cli IAuthClient) IJwtAuthClient {
+	return &jwtAuthClient{IAuthClient: cli}
 }
 
 type Logger interface {
@@ -45,8 +38,4 @@ type Logger interface {
 	Errorf(template string, args ...interface{})
 	Debug(args ...interface{})
 	Debugf(template string, args ...interface{})
-}
-
-func RandSecret() ([]byte, error) {
-	return ioutil.ReadAll(io.LimitReader(rand.Reader, 32))
 }

@@ -1,10 +1,17 @@
-<h1 align="center">Venus Central Authorization</h1>
+<p align="center">
+  <a href="https://sophon.venus-fil.io/" title="Sophon Docs">
+    <img src="https://user-images.githubusercontent.com/1591330/205581370-d467d776-60a4-4b37-b25a-58fa82adb156.png" alt="Sophon Logo" width="128" />
+  </a>
+</p>
+
+
+<h1 align="center">Sophon Auth</h1>
 
 <p align="center">
- <a href="https://github.com/filecoin-project/venus-auth/actions"><img src="https://github.com/filecoin-project/venus-auth/actions/workflows/build_upload.yml/badge.svg"/></a>
- <a href="https://codecov.io/gh/filecoin-project/venus-auth"><img src="https://codecov.io/gh/filecoin-project/venus-auth/branch/master/graph/badge.svg?token=J5QWYWkgHT"/></a>
- <a href="https://goreportcard.com/report/github.com/filecoin-project/venus-auth"><img src="https://goreportcard.com/badge/github.com/filecoin-project/venus-auth"/></a>
- <a href="https://github.com/filecoin-project/venus-auth/tags"><img src="https://img.shields.io/github/v/tag/filecoin-project/venus-auth"/></a>
+ <a href="https://github.com/ipfs-force-community/sophon-auth/actions"><img src="https://github.com/ipfs-force-community/sophon-auth/actions/workflows/build_upload.yml/badge.svg"/></a>
+ <a href="https://codecov.io/gh/ipfs-force-community/sophon-auth"><img src="https://codecov.io/gh/ipfs-force-community/sophon-auth/branch/master/graph/badge.svg?token=J5QWYWkgHT"/></a>
+ <a href="https://goreportcard.com/report/github.com/ipfs-force-community/sophon-auth"><img src="https://goreportcard.com/badge/github.com/ipfs-force-community/sophon-auth"/></a>
+ <a href="https://github.com/ipfs-force-community/sophon-auth/tags"><img src="https://img.shields.io/github/v/tag/ipfs-force-community/sophon-auth"/></a>
   <br>
 </p>
 
@@ -18,12 +25,12 @@ Use [Venus Issues](https://github.com/filecoin-project/venus/issues) for reporti
 ---
 # Get Started
 ```
-$ git clone https://github.com/filecoin-project/venus-auth.git
+$ git clone https://github.com/ipfs-force-community/sophon-auth.git
 $ export GOPROXY=https://goproxy.io,direct
 $ export GO111MODULE=on
 $ make
 
-$ venus-auth
+$ sophon-auth
 ```
 
 # RESTFul API
@@ -114,31 +121,31 @@ limit | int | \> 0 | 20
 ## 1. generate token
 ```
 # show help
-$ ./venus-auth token gen -h
+$ ./sophon-auth token gen -h
 USAGE:
-   venus-auth token gen [command options] [name]
+   sophon-auth token gen [command options] [name]
 
 OPTIONS:
    --perm value   permission for API auth (read, write, sign, admin) (default: "read")
    --extra value  custom string in JWT payload
 
-$ ./venus-auth token gen token1 --perm admin --extra custom_str
+$ ./sophon-auth token gen token1 --perm admin --extra custom_str
 generate token success: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoidG9rZW4xIiwicGVybSI6InJlYWQiLCJleHQiOiIifQ.s3jvO-yewsf3PHMF-tsWSbb-3aW7V-tlMsnEAkYdxgA
 ```
 ## 2. list token info
 ```
 # show help
 
-$ ./venus-auth token list -h
+$ ./sophon-auth token list -h
 USAGE:
-   venus-auth token list [command options] [arguments...]
+   sophon-auth token list [command options] [arguments...]
 
 OPTIONS:
    --skip value   (default: 0)
    --limit value  (default: 20)
    --help, -h     show help (default: false)
 
-$ ./venus-auth token list --skip 0 --limit 10
+$ ./sophon-auth token list --skip 0 --limit 10
 num     name          perm    createTime              token
 1       token1        admin   2021-05-31 18:45:02     eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoidG9rZW4xIiwicGVybSI6InJlYWQiLCJleHQiOiIifQ.s3jvO-yewsf3PHMF-tsWSbb-3aW7V-tlMsnEAkYdxgA
 2       token2        read    2021-06-18 13:31:47     eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiZmF0bWFuMTMiLCJwZXJtIjoicmVhZCIsImV4dCI6IiJ9.F0frWmZSsEpyZIY_VOQ9WiAVxAfzqUdhvrU16ltbP9U
@@ -149,22 +156,21 @@ num     name          perm    createTime              token
 ## 3. remove token
 ```
 # show help
-$ ./venus-auth token rm -h
+$ ./sophon-auth token rm -h
 USAGE:
-   venus-auth token rm [command options] [token]
+   sophon-auth token rm [command options] [token]
 
 OPTIONS:
    --help, -h  show help (default: false)
 
-$ ./venus-auth token rm eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoidG9rZW4xIiwicGVybSI6InJlYWQiLCJleHQiOiIifQ.s3jvO-yewsf3PHMF-tsWSbb-3aW7V-tlMsnEAkYdxgA 
+$ ./sophon-auth token rm eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoidG9rZW4xIiwicGVybSI6InJlYWQiLCJleHQiOiIifQ.s3jvO-yewsf3PHMF-tsWSbb-3aW7V-tlMsnEAkYdxgA 
 remove token success: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoidG9rZW4xIiwicGVybSI6InJlYWQiLCJleHQiOiIifQ.s3jvO-yewsf3PHMF-tsWSbb-3aW7V-tlMsnEAkYdxgA
 
 ```
 # Config
 >the default config path is "~/.auth-auth/config.toml"
 ```
-Port = "8989" 
-Secret = "88b8a61690ee648bef9bc73463b8a05917f1916df169c775a3896719466be04a"
+Listen = "127.0.0.1:8989"
 ReadTimeout = "1m"
 WriteTimeout = "1m"
 IdleTimeout = "1m"
@@ -196,11 +202,9 @@ IdleTimeout = "1m"
   # Frequency of collection
   ProbabilitySampler = 1.0
   JaegerEndpoint = "127.0.0.1:6831"
-  ServerName = "venus-auth"
+  ServerName = "sophon-auth"
 ```
 
 ## [Script](./script)
 - influxdb-docker-compose.yml => rename docker-compose.yml and install influxdb in docker
 - influxDB_view.md => histogram and graph view config
-
-

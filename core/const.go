@@ -1,17 +1,14 @@
 package core
 
-import (
-	"context"
-	"errors"
-)
-
 var CurrentCommit string
 
-const BuildVersion = "1.9.0"
+const BuildVersion = "1.11.0"
 
 var Version = BuildVersion + CurrentCommit
 
 const EmptyString = ""
+
+const AuthorizationHeader = "Authorization"
 
 type (
 	DBPrefix   = []byte
@@ -27,41 +24,32 @@ const (
 )
 
 var PermArr = []Permission{
-	PermAdmin, PermSign, PermWrite, PermRead,
+	PermRead, PermWrite, PermSign, PermAdmin,
 }
-var ErrPermIllegal = errors.New("perm illegal")
 
-func ContainsPerm(perm Permission) error {
+func IsValid(perm Permission) bool {
 	for _, v := range PermArr {
 		if v == perm {
-			return nil
+			return true
 		}
 	}
-	return ErrPermIllegal
+	return false
 }
 
 func AdaptOldStrategy(perm Permission) []Permission {
-	perms := make([]Permission, 0)
+	perms := make([]Permission, 0, 4)
 	switch perm {
 	case PermAdmin:
-		perms = append(perms, PermAdmin, PermSign, PermWrite, PermRead)
+		perms = append(perms, PermRead, PermWrite, PermSign, PermAdmin)
 	case PermSign:
-		perms = append(perms, PermSign, PermWrite, PermRead)
+		perms = append(perms, PermRead, PermWrite, PermSign)
 	case PermWrite:
-		perms = append(perms, PermWrite, PermRead)
+		perms = append(perms, PermRead, PermWrite)
 	case PermRead:
 		perms = append(perms, PermRead)
 	default:
 	}
 	return perms
-}
-
-type PermKey int
-
-var PermCtxKey PermKey
-
-func WithPerm(ctx context.Context, perm Permission) context.Context {
-	return context.WithValue(ctx, PermCtxKey, AdaptOldStrategy(perm))
 }
 
 type (

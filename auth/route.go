@@ -2,17 +2,33 @@ package auth
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
-	"github.com/filecoin-project/venus-auth/core"
-	"github.com/filecoin-project/venus-auth/log"
+	"github.com/etherlabsio/healthcheck/v2"
+
 	"github.com/gin-gonic/gin"
+	"github.com/ipfs-force-community/sophon-auth/core"
+	"github.com/ipfs-force-community/sophon-auth/log"
 )
 
+// todo: rm checkPermission after v1.13.0
 func InitRouter(app OAuthApp) http.Handler {
+	gin.SetMode(gin.ReleaseMode)
+
 	router := gin.New()
+	router.ContextWithFallback = true
 	router.Use(CorsMiddleWare())
+	router.Use(RewriteAddressInUrl())
+	router.Use(permMiddleWare(app))
+
+	headlerFunc := healthcheck.HandlerFunc()
+	router.GET("/healthcheck", func(c *gin.Context) {
+		headlerFunc(c.Writer, c.Request)
+	})
 
 	router.GET("/version", func(c *gin.Context) {
 		type version struct {
@@ -126,6 +142,66 @@ func CorsMiddleWare() gin.HandlerFunc {
 		if c.Request.Method == "OPTIONS" {
 			c.JSON(http.StatusOK, "ok!")
 		}
+		c.Next()
+	}
+}
+
+func RewriteAddressInUrl() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if len(c.Request.URL.Query()) > 0 {
+			queryParams := c.Request.URL.Query()
+			for key, params := range queryParams {
+				if key == "miner" || key == "signer" {
+					for index, v := range params {
+						params[index] = "\"" + v + "\""
+					}
+				}
+			}
+			c.Request.RequestURI = c.FullPath() + "?" + queryParams.Encode()
+			var err error
+			c.Request.URL, err = url.ParseRequestURI(c.Request.RequestURI)
+			if err != nil {
+				log.Errorf("parse request url `%s` failed: %v", c.Request.RequestURI, err)
+				_ = c.AbortWithError(http.StatusInternalServerError, errors.New("fail when rewrite request url"))
+			}
+		}
+
+		c.Next()
+	}
+}
+
+func permMiddleWare(app OAuthApp) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.Request.Header.Get(core.AuthorizationHeader)
+
+		if token == "" {
+			token = c.Request.FormValue("token")
+			if token != "" {
+				token = "Bearer " + token
+			}
+		}
+
+		if !strings.HasPrefix(token, "Bearer ") {
+			log.Warnf("missing Bearer prefix in sophon-auth header")
+			c.Writer.WriteHeader(401)
+			return
+		}
+
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		jwtPayload, err := app.verify(token)
+		if err != nil {
+			log.Warnf("verify token %s failed: %s", token, err)
+			c.Writer.WriteHeader(401)
+			return
+		}
+
+		reqCtx := core.CtxWithPerm(c.Request.Context(), jwtPayload.Perm)
+		if len(jwtPayload.Name) != 0 {
+			reqCtx = core.CtxWithName(reqCtx, jwtPayload.Name)
+		}
+		c.Request = c.Request.WithContext(reqCtx)
+
 		c.Next()
 	}
 }

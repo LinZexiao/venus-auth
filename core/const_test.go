@@ -4,19 +4,24 @@ import (
 	"context"
 	"testing"
 
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestAdaptOldStrategy(t *testing.T) {
 	perms := AdaptOldStrategy(PermAdmin)
-	assert.DeepEqual(t, perms, []Permission{PermAdmin, PermSign, PermWrite, PermRead})
+	assert.Equal(t, perms, []Permission{PermRead, PermWrite, PermSign, PermAdmin})
 }
 
 func TestWithPerm(t *testing.T) {
-	ctx := WithPerm(context.Background(), PermAdmin)
-	callerPerms, ok := ctx.Value(PermCtxKey).([]Permission)
-	if !ok {
-		t.Fatal()
+	for _, perm := range PermArr {
+		ctx := CtxWithPerm(context.Background(), perm)
+		callerPerms, ok := CtxGetPerm(ctx)
+		assert.Equal(t, true, ok)
+		assert.Equal(t, AdaptOldStrategy(perm), callerPerms)
+
+		ctx = CtxWithPerms(context.Background(), AdaptOldStrategy(perm))
+		callerPerms, ok = CtxGetPerm(ctx)
+		assert.Equal(t, true, ok)
+		assert.Equal(t, AdaptOldStrategy(perm), callerPerms)
 	}
-	t.Log(callerPerms)
 }

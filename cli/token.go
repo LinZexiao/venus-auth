@@ -5,7 +5,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/filecoin-project/venus-auth/core"
+	"github.com/ipfs-force-community/sophon-auth/core"
 )
 
 var tokenSubCommand = &cli.Command{
@@ -24,7 +24,7 @@ var genTokenCmd = &cli.Command{
 	Name:      "gen",
 	Usage:     "generate token",
 	ArgsUsage: "[name]",
-	UsageText: "./venus-auth token gen --perm=<auth> [name]",
+	UsageText: "./sophon-auth token gen --perm=<auth> [name]",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name:  "perm",
@@ -51,12 +51,12 @@ var genTokenCmd = &cli.Command{
 		}
 
 		perm := ctx.String("perm")
-		if err = core.ContainsPerm(perm); err != nil {
-			return fmt.Errorf("`perm` flag: %w", err)
+		if !core.IsValid(perm) {
+			return fmt.Errorf("`perm` flag invalid")
 		}
 
 		extra := ctx.String("extra")
-		tk, err := client.GenerateToken(name, perm, extra)
+		tk, err := client.GenerateToken(ctx.Context, name, perm, extra)
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ var getTokenCmd = &cli.Command{
 		if err != nil {
 			return err
 		}
-		tokens, err := client.GetToken(name, token)
+		tokens, err := client.GetToken(ctx.Context, name, token)
 		if err != nil {
 			return err
 		}
@@ -121,7 +121,7 @@ var listTokensCmd = &cli.Command{
 		}
 		skip := int64(ctx.Uint("skip"))
 		limit := int64(ctx.Uint("limit"))
-		tks, err := client.Tokens(skip, limit)
+		tks, err := client.Tokens(ctx.Context, skip, limit)
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ var removeTokenCmd = &cli.Command{
 			return err
 		}
 		tk := ctx.Args().First()
-		err = client.RemoveToken(tk)
+		err = client.RemoveToken(ctx.Context, tk)
 		if err != nil {
 			return err
 		}
@@ -175,7 +175,7 @@ var recoverTokenCmd = &cli.Command{
 			return err
 		}
 		tk := ctx.Args().First()
-		err = client.RecoverToken(tk)
+		err = client.RecoverToken(ctx.Context, tk)
 		if err != nil {
 			return err
 		}

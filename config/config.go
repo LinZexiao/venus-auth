@@ -3,9 +3,7 @@ package config
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"io"
-	"io/ioutil"
 	"os"
 	"time"
 
@@ -15,8 +13,7 @@ import (
 )
 
 type Config struct {
-	Port         string               `json:"port"`
-	Secret       string               `json:"secret"`
+	Listen       string               `json:"listen"`
 	ReadTimeout  time.Duration        `json:"readTimeout"`
 	WriteTimeout time.Duration        `json:"writeTimeout"`
 	IdleTimeout  time.Duration        `json:"idleTimeout"`
@@ -44,21 +41,16 @@ type DBConfig struct {
 
 // RandSecret If the daemon does not have a secret key configured, it is automatically generated
 func RandSecret() ([]byte, error) {
-	sk, err := ioutil.ReadAll(io.LimitReader(rand.Reader, 32))
+	sk, err := io.ReadAll(io.LimitReader(rand.Reader, 32))
 	if err != nil {
 		return nil, err
 	}
 	return sk, nil
 }
 
-func DefaultConfig() (*Config, error) {
-	secret, err := RandSecret()
-	if err != nil {
-		return nil, err
-	}
+func DefaultConfig() *Config {
 	return &Config{
-		Port:         "8989",
-		Secret:       hex.EncodeToString(secret),
+		Listen:       "127.0.0.1:8989",
 		ReadTimeout:  time.Minute,
 		WriteTimeout: time.Minute,
 		IdleTimeout:  time.Minute,
@@ -66,16 +58,20 @@ func DefaultConfig() (*Config, error) {
 			JaegerTracingEnabled: false,
 			ProbabilitySampler:   1.0,
 			JaegerEndpoint:       "localhost:6831",
-			ServerName:           "venus-auth",
+			ServerName:           "sophon-auth",
 		},
 		Log: &LogConfig{
 			LogLevel:   "trace",
 			HookSwitch: false,
 		},
 		DB: &DBConfig{
-			Type: Badger,
+			Type:         Badger,
+			MaxOpenConns: 64,
+			MaxIdleConns: 128,
+			MaxLifeTime:  120 * time.Second,
+			MaxIdleTime:  60 * time.Second,
 		},
-	}, nil
+	}
 }
 
 type LogHookType = int
@@ -119,16 +115,6 @@ func DecodeConfig(path string) (c *Config, err error) {
 		return nil, err
 	}
 	return
-}
-
-func Exist(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	} else if !os.IsNotExist(err) {
-		return false, err
-	}
-	return false, nil
 }
 
 func Cover(path string, config *Config) error {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/filecoin-project/venus-auth/jwtclient"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/ipfs-force-community/sophon-auth/auth"
+	"github.com/ipfs-force-community/sophon-auth/jwtclient"
 )
 
 func TestTokenApis(t *testing.T) {
@@ -16,13 +18,15 @@ func TestTokenApis(t *testing.T) {
 }
 
 func setupAndGenerateToken(t *testing.T, name string, perm string) (*jwtclient.AuthClient, string, string) {
-	server, tmpDir := setup(t)
+	server, tmpDir, adminToken := setup(t)
 
-	client, err := jwtclient.NewAuthClient(server.URL)
+	client, err := jwtclient.NewAuthClient(server.URL, adminToken)
 	assert.Nil(t, err)
 
 	// Generate a token
-	token, err := client.GenerateToken(name, perm, "")
+	_, err = client.CreateUser(context.TODO(), &auth.CreateUserRequest{Name: name})
+	assert.Nil(t, err)
+	token, err := client.GenerateToken(context.TODO(), name, perm, "")
 	assert.Nil(t, err)
 	return client, tmpDir, token
 }
@@ -55,10 +59,10 @@ func testListToken(t *testing.T) {
 	client, tmpDir, token := setupAndGenerateToken(t, name, perm)
 	defer shutdown(t, tmpDir)
 
-	listResp, err := client.Tokens(int64(0), int64(10))
+	listResp, err := client.Tokens(context.TODO(), int64(0), int64(10))
 	assert.Nil(t, err)
-	assert.Equal(t, 1, len(listResp))
-	assert.Equal(t, token, listResp[0].Token)
+	assert.Equal(t, 2, len(listResp))
+	assert.Contains(t, []string{listResp[0].Token, listResp[1].Token}, token)
 }
 
 func testRemoveAndRecoverToken(t *testing.T) {
@@ -69,14 +73,14 @@ func testRemoveAndRecoverToken(t *testing.T) {
 	defer shutdown(t, tmpDir)
 
 	// Remove and then verify
-	err := client.RemoveToken(token)
+	err := client.RemoveToken(context.TODO(), token)
 	assert.Nil(t, err)
 	_, err = client.Verify(context.Background(), token)
 	// Should not succeed this time
 	assert.NotNil(t, err)
 
 	// Recover this token and then verify
-	err = client.RecoverToken(token)
+	err = client.RecoverToken(context.TODO(), token)
 	assert.Nil(t, err)
 	verifyResp, err := client.Verify(context.Background(), token)
 	// Should succeed this time

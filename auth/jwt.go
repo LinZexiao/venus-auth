@@ -10,24 +10,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/gbrlsnchs/jwt/v3"
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
 
-	"github.com/filecoin-project/venus-auth/config"
-	"github.com/filecoin-project/venus-auth/core"
-	"github.com/filecoin-project/venus-auth/log"
-	"github.com/filecoin-project/venus-auth/storage"
-	"github.com/filecoin-project/venus-auth/util"
+	"github.com/ipfs-force-community/sophon-auth/config"
+	"github.com/ipfs-force-community/sophon-auth/core"
+	"github.com/ipfs-force-community/sophon-auth/storage"
+	"github.com/ipfs-force-community/sophon-auth/util"
 )
 
 var (
 	ErrorNonRegisteredToken = xerrors.New("A non-registered token")
 	ErrorVerificationFailed = xerrors.New("Verification Failed")
+	ErrorPermissionDeny     = xerrors.New("Permission Deny")
+	ErrorPermissionNotFound = errors.New("permission not found")
+	ErrorUsernameNotFound   = errors.New("username not found")
 )
 
 var jwtOAuthInstance *jwtOAuth
@@ -51,8 +51,8 @@ type OAuthService interface {
 	ListUsers(ctx context.Context, req *ListUsersRequest) (ListUsersResponse, error)
 	HasUser(ctx context.Context, req *HasUserRequest) (bool, error)
 	UpdateUser(ctx context.Context, req *UpdateUserRequest) error
-	DeleteUser(ctx *gin.Context, req *DeleteUserRequest) error
-	RecoverUser(ctx *gin.Context, req *RecoverUserRequest) error
+	DeleteUser(ctx context.Context, req *DeleteUserRequest) error
+	RecoverUser(ctx context.Context, req *RecoverUserRequest) error
 
 	GetUserRateLimits(ctx context.Context, req *GetUserRateLimitsReq) (GetUserRateLimitResponse, error)
 	UpsertUserRateLimit(ctx context.Context, req *UpsertUserRateLimitReq) (string, error)
@@ -75,9 +75,8 @@ type OAuthService interface {
 }
 
 type jwtOAuth struct {
-	secret *jwt.HMACSHA
-	store  storage.Store
-	mp     Mapper
+	store storage.Store
+	mp    Mapper
 }
 
 type JWTPayload struct {
@@ -86,48 +85,33 @@ type JWTPayload struct {
 	Extra string          `json:"ext"`
 }
 
-func NewOAuthService(secret string, dbPath string, cnf *config.DBConfig) (OAuthService, error) {
-	sec, err := hex.DecodeString(secret)
-	if err != nil {
-		return nil, err
-	}
+func NewOAuthService(dbPath string, cnf *config.DBConfig) (OAuthService, error) {
 	store, err := storage.NewStore(cnf, dbPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO: remove it next version
-	skip, limit := int64(0), int64(20)
-	for {
-		kps, err := store.List(skip, limit)
-		if err != nil {
-			return nil, xerrors.Errorf("list token %v", err)
-		}
-		for _, kp := range kps {
-			if len(kp.Secret) == 0 {
-				kp.Secret = secret
-				log.Infof("update token %s secret %s", kp.Token, secret)
-				if err := store.UpdateToken(kp); err != nil {
-					return nil, xerrors.Errorf("update token(%s) %v", kp.Token, err)
-				}
-			}
-		}
-		if len(kps) == 0 {
-			break
-		}
-
-		skip += limit
-	}
-
 	jwtOAuthInstance = &jwtOAuth{
-		secret: jwt.NewHS256(sec),
-		store:  store,
-		mp:     newMapper(),
+		store: store,
+		mp:    newMapper(),
 	}
 	return jwtOAuthInstance, nil
 }
 
 func (o *jwtOAuth) GenerateToken(ctx context.Context, pl *JWTPayload) (string, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return "", fmt.Errorf("need admin prem: %w", err)
+	}
+
+	exist, err := o.store.HasUser(pl.Name)
+	if err != nil {
+		return "", fmt.Errorf("check user %s exist failed: %w", pl.Name, err)
+	}
+	if !exist {
+		return "", fmt.Errorf("token must be based on an existing user %s to generate", pl.Name)
+	}
+
 	// one token, one secret
 	secret, err := config.RandSecret()
 	if err != nil {
@@ -157,6 +141,11 @@ func (o *jwtOAuth) GenerateToken(ctx context.Context, pl *JWTPayload) (string, e
 }
 
 func (o *jwtOAuth) Verify(ctx context.Context, token string) (*JWTPayload, error) {
+	err := permCheck(ctx, core.PermRead)
+	if err != nil {
+		return nil, fmt.Errorf("need read prem: %w", err)
+	}
+
 	p := new(JWTPayload)
 	tk := []byte(token)
 
@@ -195,7 +184,12 @@ func toTokenInfo(kp *storage.KeyPair) (*TokenInfo, error) {
 	}, nil
 }
 
-func (o *jwtOAuth) GetToken(c context.Context, token string) (*TokenInfo, error) {
+func (o *jwtOAuth) GetToken(ctx context.Context, token string) (*TokenInfo, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	pair, err := o.store.Get(storage.Token(token))
 	if err != nil {
 		return nil, err
@@ -203,8 +197,13 @@ func (o *jwtOAuth) GetToken(c context.Context, token string) (*TokenInfo, error)
 	return toTokenInfo(pair)
 }
 
-func (o *jwtOAuth) GetTokenByName(c context.Context, name string) ([]*TokenInfo, error) {
-	pairs, err := o.store.ByName(name)
+func (o *jwtOAuth) GetTokenByName(ctx context.Context, username string) ([]*TokenInfo, error) {
+	err := userPermCheck(ctx, username)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem or user %s does not match: %w", username, err)
+	}
+
+	pairs, err := o.store.ByName(username)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +219,11 @@ func (o *jwtOAuth) GetTokenByName(c context.Context, name string) ([]*TokenInfo,
 }
 
 func (o *jwtOAuth) Tokens(ctx context.Context, skip, limit int64) ([]*TokenInfo, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	pairs, err := o.store.List(skip, limit)
 	if err != nil {
 		return nil, err
@@ -236,7 +240,12 @@ func (o *jwtOAuth) Tokens(ctx context.Context, skip, limit int64) ([]*TokenInfo,
 }
 
 func (o *jwtOAuth) RemoveToken(ctx context.Context, token string) error {
-	err := o.store.Delete(storage.Token(token))
+	err := tokenPermCheck(ctx, token)
+	if err != nil {
+		return fmt.Errorf("need admin prem or token %s check failed: %w", token, err)
+	}
+
+	err = o.store.Delete(storage.Token(token))
 	if err != nil {
 		return fmt.Errorf("remove token %s: %w", token, err)
 	}
@@ -244,7 +253,12 @@ func (o *jwtOAuth) RemoveToken(ctx context.Context, token string) error {
 }
 
 func (o *jwtOAuth) RecoverToken(ctx context.Context, token string) error {
-	err := o.store.Recover(storage.Token(token))
+	err := tokenPermCheck(ctx, token)
+	if err != nil {
+		return fmt.Errorf("need admin prem or token %s check failed: %w", token, err)
+	}
+
+	err = o.store.Recover(storage.Token(token))
 	if err != nil {
 		return fmt.Errorf("recover token %s: %w", token, err)
 	}
@@ -252,6 +266,11 @@ func (o *jwtOAuth) RecoverToken(ctx context.Context, token string) error {
 }
 
 func (o *jwtOAuth) CreateUser(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	exist, err := o.store.HasUser(req.Name)
 	if err != nil {
 		return nil, err
@@ -282,6 +301,11 @@ func (o *jwtOAuth) CreateUser(ctx context.Context, req *CreateUserRequest) (*Cre
 }
 
 func (o *jwtOAuth) UpdateUser(ctx context.Context, req *UpdateUserRequest) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	user, err := o.store.GetUser(req.Name)
 	if err != nil {
 		return err
@@ -297,10 +321,20 @@ func (o *jwtOAuth) UpdateUser(ctx context.Context, req *UpdateUserRequest) error
 }
 
 func (o *jwtOAuth) VerifyUsers(ctx context.Context, req *VerifyUsersReq) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.VerifyUsers(req.Names)
 }
 
 func (o *jwtOAuth) ListUsers(ctx context.Context, req *ListUsersRequest) (ListUsersResponse, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	users, err := o.store.ListUsers(req.GetSkip(), req.GetLimit(), core.UserState(req.State))
 	if err != nil {
 		return nil, err
@@ -309,23 +343,38 @@ func (o *jwtOAuth) ListUsers(ctx context.Context, req *ListUsersRequest) (ListUs
 }
 
 func (o *jwtOAuth) HasUser(ctx context.Context, req *HasUserRequest) (bool, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return false, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.HasUser(req.Name)
 }
 
-func (o *jwtOAuth) DeleteUser(ctx *gin.Context, req *DeleteUserRequest) error {
+func (o *jwtOAuth) DeleteUser(ctx context.Context, req *DeleteUserRequest) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.DeleteUser(req.Name)
 }
 
-func (o *jwtOAuth) RecoverUser(ctx *gin.Context, req *RecoverUserRequest) error {
+func (o *jwtOAuth) RecoverUser(ctx context.Context, req *RecoverUserRequest) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
 	return o.store.RecoverUser(req.Name)
 }
 
 func (o *jwtOAuth) GetUserByMiner(ctx context.Context, req *GetUserByMinerRequest) (*OutputUser, error) {
-	mAddr, err := address.NewFromString(req.Miner)
+	err := permCheck(ctx, core.PermAdmin)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("need admin prem: %w", err)
 	}
-	user, err := o.store.GetUserByMiner(mAddr)
+
+	user, err := o.store.GetUserByMiner(req.Miner)
 	if err != nil {
 		return nil, err
 	}
@@ -333,11 +382,12 @@ func (o *jwtOAuth) GetUserByMiner(ctx context.Context, req *GetUserByMinerReques
 }
 
 func (o *jwtOAuth) GetUserBySigner(ctx context.Context, req *GetUserBySignerReq) ([]*OutputUser, error) {
-	addr, err := address.NewFromString(req.Signer)
+	err := permCheck(ctx, core.PermAdmin)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("need admin prem: %w", err)
 	}
-	users, err := o.store.GetUserBySigner(addr)
+
+	users, err := o.store.GetUserBySigner(req.Signer)
 	if err != nil {
 		return nil, err
 	}
@@ -351,6 +401,11 @@ func (o *jwtOAuth) GetUserBySigner(ctx context.Context, req *GetUserBySignerReq)
 }
 
 func (o *jwtOAuth) GetUser(ctx context.Context, req *GetUserRequest) (*OutputUser, error) {
+	err := userPermCheck(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem or user %s does not match: %w", req.Name, err)
+	}
+
 	user, err := o.store.GetUser(req.Name)
 	if err != nil {
 		return nil, err
@@ -359,37 +414,53 @@ func (o *jwtOAuth) GetUser(ctx context.Context, req *GetUserRequest) (*OutputUse
 }
 
 func (o jwtOAuth) GetUserRateLimits(ctx context.Context, req *GetUserRateLimitsReq) (GetUserRateLimitResponse, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.GetRateLimits(req.Name, req.Id)
 }
 
 func (o *jwtOAuth) UpsertUserRateLimit(ctx context.Context, req *UpsertUserRateLimitReq) (string, error) {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return "nil", fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.PutRateLimit((*storage.UserRateLimit)(req))
 }
 
 func (o jwtOAuth) DelUserRateLimit(ctx context.Context, req *DelUserRateLimitReq) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	return o.store.DelRateLimit(req.Name, req.Id)
 }
 
 func (o *jwtOAuth) UpsertMiner(ctx context.Context, req *UpsertMinerReq) (bool, error) {
-	maddr, err := address.NewFromString(req.Miner)
-	if err != nil || maddr.Empty() {
-		return false, xerrors.Errorf("invalid miner address:%s, error: %w", req.Miner, err)
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return false, fmt.Errorf("need admin prem: %w", err)
 	}
 
-	if maddr.Protocol() != address.ID {
-		return false, fmt.Errorf("invalid protocol type: %v", maddr.Protocol())
+	mAddr := req.Miner
+	if mAddr.Protocol() != address.ID {
+		return false, fmt.Errorf("invalid protocol type: %v", mAddr.Protocol())
 	}
 
-	return o.store.UpsertMiner(maddr, req.User, req.OpenMining)
+	return o.store.UpsertMiner(mAddr, req.User, req.OpenMining)
 }
 
 func (o *jwtOAuth) HasMiner(ctx context.Context, req *HasMinerRequest) (bool, error) {
-	mAddr, err := address.NewFromString(req.Miner)
+	err := permCheck(ctx, core.PermAdmin)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("need admin prem: %w", err)
 	}
 
-	has, err := o.store.HasMiner(mAddr)
+	has, err := o.store.HasMiner(req.Miner)
 	if err != nil {
 		return false, err
 	}
@@ -397,12 +468,12 @@ func (o *jwtOAuth) HasMiner(ctx context.Context, req *HasMinerRequest) (bool, er
 }
 
 func (o *jwtOAuth) MinerExistInUser(ctx context.Context, req *MinerExistInUserRequest) (bool, error) {
-	mAddr, err := address.NewFromString(req.Miner)
+	err := userPermCheck(ctx, req.User)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("need admin prem or user %s does not match: %w", req.User, err)
 	}
 
-	exist, err := o.store.MinerExistInUser(mAddr, req.User)
+	exist, err := o.store.MinerExistInUser(req.Miner, req.User)
 	if err != nil {
 		return false, err
 	}
@@ -410,6 +481,11 @@ func (o *jwtOAuth) MinerExistInUser(ctx context.Context, req *MinerExistInUserRe
 }
 
 func (o *jwtOAuth) ListMiners(ctx context.Context, req *ListMinerReq) (ListMinerResp, error) {
+	err := userPermCheck(ctx, req.User)
+	if err != nil {
+		return nil, fmt.Errorf("need admin prem or user %s does not match: %w", req.User, err)
+	}
+
 	miners, err := o.store.ListMiners(req.User)
 	if err != nil {
 		return nil, xerrors.Errorf("list user:%s miners failed:%w", req.User, err)
@@ -417,9 +493,8 @@ func (o *jwtOAuth) ListMiners(ctx context.Context, req *ListMinerReq) (ListMiner
 
 	outs := make([]*OutputMiner, len(miners))
 	for idx, m := range miners {
-		addrStr := m.Miner.Address().String()
 		outs[idx] = &OutputMiner{
-			Miner:      addrStr,
+			Miner:      m.Miner.Address(),
 			User:       m.User,
 			OpenMining: *m.OpenMining,
 			CreatedAt:  m.CreatedAt,
@@ -430,25 +505,27 @@ func (o *jwtOAuth) ListMiners(ctx context.Context, req *ListMinerReq) (ListMiner
 }
 
 func (o jwtOAuth) DelMiner(ctx context.Context, req *DelMinerReq) (bool, error) {
-	miner, err := address.NewFromString(req.Miner)
-	if err != nil {
-		return false, xerrors.Errorf("invalid miner address:%s, %w", req.Miner, err)
+	if permCheck(ctx, core.PermAdmin) != nil {
+		if err := ownerOfMinerCheck(ctx, o.store, req.Miner); err != nil {
+			return false, fmt.Errorf("need admin prem or %s ownership check error: %w", req.Miner, err)
+		}
 	}
-	return o.store.DelMiner(miner)
+
+	return o.store.DelMiner(req.Miner)
 }
 
 func (o *jwtOAuth) RegisterSigners(ctx context.Context, req *RegisterSignersReq) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	for _, signer := range req.Signers {
-		addr, err := address.NewFromString(signer)
-		if err != nil || addr.Empty() {
-			return fmt.Errorf("invalid signer address: %s, error: %w", signer, err)
+		if !IsSignerAddress(signer) {
+			return fmt.Errorf("invalid protocol type: %v", signer.Protocol())
 		}
 
-		if !isSignerAddress(addr) {
-			return fmt.Errorf("invalid protocol type: %v", addr.Protocol())
-		}
-
-		err = o.store.RegisterSigner(addr, req.User)
+		err := o.store.RegisterSigner(signer, req.User)
 		if err != nil {
 			return fmt.Errorf("unregister signer:%s, error: %w", signer, err)
 		}
@@ -458,12 +535,12 @@ func (o *jwtOAuth) RegisterSigners(ctx context.Context, req *RegisterSignersReq)
 }
 
 func (o *jwtOAuth) SignerExistInUser(ctx context.Context, req *SignerExistInUserReq) (bool, error) {
-	addr, err := address.NewFromString(req.Signer)
-	if err != nil {
-		return false, err
+	if err := userPermCheck(ctx, req.User); err != nil {
+		return false, fmt.Errorf("need admin prem or user %s does not match: %w", req.User, err)
 	}
 
-	if !isSignerAddress(addr) {
+	addr := req.Signer
+	if !IsSignerAddress(addr) {
 		return false, fmt.Errorf("invalid protocol type: %v", addr.Protocol())
 	}
 
@@ -475,6 +552,10 @@ func (o *jwtOAuth) SignerExistInUser(ctx context.Context, req *SignerExistInUser
 }
 
 func (o *jwtOAuth) ListSigner(ctx context.Context, req *ListSignerReq) (ListSignerResp, error) {
+	if err := userPermCheck(ctx, req.User); err != nil {
+		return nil, fmt.Errorf("need admin prem or user %s does not match: %w", req.User, err)
+	}
+
 	signers, err := o.store.ListSigner(req.User)
 	if err != nil {
 		return nil, xerrors.Errorf("list user:%s signer failed: %w", req.User, err)
@@ -482,9 +563,8 @@ func (o *jwtOAuth) ListSigner(ctx context.Context, req *ListSignerReq) (ListSign
 
 	outs := make([]*OutputSigner, len(signers))
 	for idx, m := range signers {
-		addrStr := m.Signer.Address().String()
 		outs[idx] = &OutputSigner{
-			Signer:    addrStr,
+			Signer:    m.Signer.Address(),
 			User:      m.User,
 			CreatedAt: m.CreatedAt,
 			UpdatedAt: m.UpdatedAt,
@@ -494,17 +574,17 @@ func (o *jwtOAuth) ListSigner(ctx context.Context, req *ListSignerReq) (ListSign
 }
 
 func (o *jwtOAuth) UnregisterSigners(ctx context.Context, req *UnregisterSignersReq) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err != nil {
+		return fmt.Errorf("need admin prem: %w", err)
+	}
+
 	for _, signer := range req.Signers {
-		addr, err := address.NewFromString(signer)
-		if err != nil || addr.Empty() {
-			return fmt.Errorf("invalid signer address: %s, error: %w", signer, err)
+		if !IsSignerAddress(signer) {
+			return fmt.Errorf("invalid protocol type: %v", signer.Protocol())
 		}
 
-		if !isSignerAddress(addr) {
-			return fmt.Errorf("invalid protocol type: %v", addr.Protocol())
-		}
-
-		err = o.store.UnregisterSigner(addr, req.User)
+		err := o.store.UnregisterSigner(signer, req.User)
 		if err != nil {
 			return fmt.Errorf("unregister signer:%s, error: %w", signer, err)
 		}
@@ -514,12 +594,13 @@ func (o *jwtOAuth) UnregisterSigners(ctx context.Context, req *UnregisterSigners
 }
 
 func (o jwtOAuth) HasSigner(ctx context.Context, req *HasSignerReq) (bool, error) {
-	addr, err := address.NewFromString(req.Signer)
+	err := permCheck(ctx, core.PermAdmin)
 	if err != nil {
-		return false, xerrors.Errorf("invalid signer address:%s, %w", req.Signer, err)
+		return false, fmt.Errorf("need admin prem: %w", err)
 	}
 
-	if !isSignerAddress(addr) {
+	addr := req.Signer
+	if !IsSignerAddress(addr) {
 		return false, fmt.Errorf("invalid protocol type: %v", addr.Protocol())
 	}
 
@@ -527,13 +608,12 @@ func (o jwtOAuth) HasSigner(ctx context.Context, req *HasSignerReq) (bool, error
 }
 
 func (o jwtOAuth) DelSigner(ctx context.Context, req *DelSignerReq) (bool, error) {
-	addr, err := address.NewFromString(req.Signer)
+	addr := req.Signer
+	err := permCheck(ctx, core.PermAdmin)
 	if err != nil {
-		return false, xerrors.Errorf("invalid signer address:%s, %w", req.Signer, err)
-	}
-
-	if !isSignerAddress(addr) {
-		return false, fmt.Errorf("invalid protocol type: %v", addr.Protocol())
+		if err := ownerOfSignerCheck(ctx, o.store, req.Signer); err != nil {
+			return false, fmt.Errorf("need admin prem or %s ownership check error: %w", req.Signer, err)
+		}
 	}
 
 	return o.store.DelSigner(addr)
@@ -563,6 +643,103 @@ func JwtUserFromToken(token string) (string, error) {
 	return payload.Name, err
 }
 
-func isSignerAddress(addr address.Address) bool {
-	return addr.Protocol() == address.SECP256K1 || addr.Protocol() == address.BLS
+func IsSignerAddress(addr address.Address) bool {
+	protocol := addr.Protocol()
+	return protocol == address.SECP256K1 || protocol == address.BLS || protocol == address.Delegated
+}
+
+func permCheck(ctx context.Context, needPerm core.Permission) error {
+	callerPerms, ok := core.CtxGetPerm(ctx)
+	if !ok {
+		return ErrorPermissionNotFound
+	}
+
+	for _, callerPerm := range callerPerms {
+		if callerPerm == needPerm {
+			return nil
+		}
+	}
+
+	return ErrorPermissionDeny
+}
+
+func userPermCheck(ctx context.Context, username string) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err == nil {
+		return nil
+	}
+
+	ctxUsername, ok := core.CtxGetName(ctx)
+	if !ok {
+		return ErrorUsernameNotFound
+	}
+	if ctxUsername == username {
+		return nil
+	}
+
+	return ErrorPermissionDeny
+}
+
+func tokenPermCheck(ctx context.Context, token string) error {
+	err := permCheck(ctx, core.PermAdmin)
+	if err == nil {
+		return nil
+	}
+
+	username, err := JwtUserFromToken(token)
+	if err != nil {
+		return fmt.Errorf("get user of token %s failed: %w", token, err)
+	}
+
+	ctxUsername, ok := core.CtxGetName(ctx)
+	if !ok {
+		return ErrorUsernameNotFound
+	}
+	if ctxUsername == username {
+		return nil
+	}
+
+	return ErrorPermissionDeny
+}
+
+type minerOwnershipChecker interface {
+	MinerExistInUser(maddr address.Address, userName string) (bool, error)
+}
+
+func ownerOfMinerCheck(ctx context.Context, checker minerOwnershipChecker, miner address.Address) error {
+	userName, ok := core.CtxGetName(ctx)
+	if !ok {
+		return ErrorUsernameNotFound
+	}
+	has, err := checker.MinerExistInUser(miner, userName)
+	if err != nil {
+		return err
+	}
+
+	if !has {
+		return ErrorPermissionDeny
+	}
+
+	return nil
+}
+
+type signerOwnershipChecker interface {
+	SignerExistInUser(signer address.Address, userName string) (bool, error)
+}
+
+func ownerOfSignerCheck(ctx context.Context, checker signerOwnershipChecker, signer address.Address) error {
+	userName, ok := core.CtxGetName(ctx)
+	if !ok {
+		return ErrorUsernameNotFound
+	}
+	has, err := checker.SignerExistInUser(signer, userName)
+	if err != nil {
+		return err
+	}
+
+	if !has {
+		return ErrorPermissionDeny
+	}
+
+	return nil
 }

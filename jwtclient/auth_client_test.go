@@ -5,31 +5,26 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/gin-gonic/gin"
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
 
-	"github.com/filecoin-project/venus-auth/auth"
-	"github.com/filecoin-project/venus-auth/config"
-	"github.com/filecoin-project/venus-auth/core"
-	"github.com/filecoin-project/venus-auth/util"
+	"github.com/ipfs-force-community/sophon-auth/auth"
+	"github.com/ipfs-force-community/sophon-auth/config"
+	"github.com/ipfs-force-community/sophon-auth/core"
+	"github.com/ipfs-force-community/sophon-auth/util"
 )
 
 var cli *AuthClient
 
 // nolint
 func TestMain(m *testing.M) {
-	cnf, err := config.DefaultConfig()
-	if err != nil {
-		log.Fatalf("failed to get default config err:%s", err)
-	}
+	cnf := config.DefaultConfig()
 	flag.StringVar(&cnf.DB.Type, "db", "badger", "mysql or badger")
 	flag.StringVar(&cnf.DB.DSN, "dns", "", "sql connection string or badger data path")
 	flag.Parse()
@@ -40,24 +35,28 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("failed to get available port err:%s", err)
 	}
-	cnf.Port = strconv.FormatInt(int64(port), 10)
-	var tmpPath string
+	cnf.Listen = fmt.Sprintf("127.0.0.1:%d", port)
 
+	var tmpPath string
 	if cnf.DB.Type == "badger" {
-		if tmpPath, err = ioutil.TempDir("", "auth-serve"); err != nil {
+		if tmpPath, err = os.MkdirTemp("", "auth-serve"); err != nil {
 			log.Fatalf("failed to create temp dir err:%s", err)
 		}
-		defer os.RemoveAll(tmpPath)
 	}
 
 	// stm: @VENUSAUTH_JWT_NEW_OAUTH_SERVICE_001
-	app, err := auth.NewOAuthApp(cnf.Secret, tmpPath, cnf.DB)
+	app, err := auth.NewOAuthApp(tmpPath, cnf.DB)
 	if err != nil {
 		log.Fatalf("Failed to init oauthApp : %s", err)
 	}
+	token, err := app.GetDefaultAdminToken()
+	if err != nil {
+		log.Fatalf("Failed to get default admin token : %s", err)
+	}
+
 	router := auth.InitRouter(app)
 	server := &http.Server{
-		Addr:         ":" + cnf.Port,
+		Addr:         cnf.Listen,
 		Handler:      router,
 		ReadTimeout:  cnf.ReadTimeout,
 		WriteTimeout: cnf.WriteTimeout,
@@ -65,11 +64,13 @@ func TestMain(m *testing.M) {
 	}
 
 	go func() {
-		log.Infof("server start and listen on %s", cnf.Port)
-		_ = server.ListenAndServe()
+		log.Infof("server start and listen on %s", cnf.Listen)
+		if err = server.ListenAndServe(); err != nil {
+			log.Errorf("start serve failed: %v", err)
+		}
 	}() //nolint
 
-	if cli, err = NewAuthClient("http://localhost:" + cnf.Port); err != nil {
+	if cli, err = NewAuthClient("http://"+cnf.Listen, token); err != nil {
 		log.Fatalf("create auth client failed:%s\n", err.Error())
 		return
 	}
@@ -83,20 +84,33 @@ func TestMain(m *testing.M) {
 }
 
 func TestTokenBusiness(t *testing.T) {
+	ctx := context.TODO()
 	var originTks []string
-	tk1, err := cli.GenerateToken("Rennbon1", core.PermAdmin, "custom params")
+	_, err := cli.CreateUser(context.TODO(), &auth.CreateUserRequest{
+		Name: "Rennbon1",
+	})
+	if err != nil {
+		t.Fatalf("create user err:%s", err)
+	}
+	tk1, err := cli.GenerateToken(context.TODO(), "Rennbon1", core.PermAdmin, "custom params")
 	if err != nil {
 		t.Fatalf("gen token err:%s", err)
 	}
 	originTks = append(originTks, tk1)
 
-	tk2, err := cli.GenerateToken("Rennbon2", core.PermRead, "custom params")
+	_, err = cli.CreateUser(context.TODO(), &auth.CreateUserRequest{
+		Name: "Rennbon2",
+	})
+	if err != nil {
+		t.Fatalf("create user err:%s", err)
+	}
+	tk2, err := cli.GenerateToken(context.TODO(), "Rennbon2", core.PermRead, "custom params")
 	if err != nil {
 		t.Fatalf("gen token err:%s", err)
 	}
 	originTks = append(originTks, tk2)
 
-	tks, err := cli.Tokens(0, 0)
+	tks, err := cli.Tokens(ctx, 0, 0)
 	if err != nil {
 		t.Fatalf("get tokens err:%s", err)
 	}
@@ -112,11 +126,11 @@ func TestTokenBusiness(t *testing.T) {
 		assert.Equal(t, find, true)
 	}
 
-	err = cli.RemoveToken(tk1)
+	err = cli.RemoveToken(ctx, tk1)
 	if err != nil {
 		t.Fatalf("remove token err:%s", err)
 	}
-	tks2, err := cli.Tokens(0, 0)
+	tks2, err := cli.Tokens(ctx, 0, 0)
 	if err != nil {
 		t.Fatalf("get tokens err:%s", err)
 	}
@@ -150,12 +164,12 @@ func TestUserBusiness(t *testing.T) {
 	originUsers := make(map[string]*auth.CreateUserResponse, len(createReqs))
 	var err error
 	for _, req := range createReqs {
-		resp, err := cli.CreateUser(req)
+		resp, err := cli.CreateUser(context.TODO(), req)
 		if err != nil {
 			// user already exists error is ok
 			if strings.Index(err.Error(), "already exists") > 0 {
-				resp, err := cli.GetUser(&auth.GetUserRequest{Name: req.Name})
-				assert.NilError(t, err)
+				resp, err := cli.GetUser(context.Background(), req.Name)
+				assert.NoError(t, err)
 				originUsers[resp.Id] = resp
 				continue
 			}
@@ -164,12 +178,7 @@ func TestUserBusiness(t *testing.T) {
 		originUsers[resp.Id] = resp
 	}
 
-	users, err := cli.ListUsers(&auth.ListUsersRequest{
-		Page: &core.Page{
-			Limit: 10,
-		},
-		State: int(core.UserStateUndefined),
-	})
+	users, err := cli.ListUsers(context.Background(), 0, 10, core.UserStateUndefined)
 	if err != nil {
 		t.Fatalf("get tokens err:%s", err)
 	}
@@ -182,14 +191,14 @@ func TestUserBusiness(t *testing.T) {
 	for id, u := range originUsers {
 		tmpU, find := listUserMaps[id]
 		assert.Equal(t, find, true)
-		assert.DeepEqual(t, u.Name, tmpU.Name)
-		assert.DeepEqual(t, u.Comment, tmpU.Comment)
-		assert.DeepEqual(t, u.State, tmpU.State)
+		assert.Equal(t, u.Name, tmpU.Name)
+		assert.Equal(t, u.Comment, tmpU.Comment)
+		assert.Equal(t, u.State, tmpU.State)
 	}
 
 	newComment := "this is a new comment"
 	for _, res1 := range originUsers {
-		err = cli.UpdateUser(&auth.UpdateUserRequest{
+		err = cli.UpdateUser(context.TODO(), &auth.UpdateUserRequest{
 			Name:    res1.Name,
 			Comment: &newComment,
 			State:   1,
@@ -197,55 +206,52 @@ func TestUserBusiness(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = cli.UpsertMiner(res1.Name, "f02345", true)
-		assert.NilError(t, err)
+		_, err = cli.UpsertMiner(context.TODO(), res1.Name, "f02345", true)
+		assert.NoError(t, err)
 		break
 	}
 
-	user, err := cli.GetUserByMiner(&auth.GetUserByMinerRequest{
-		Miner: "f02345",
-	})
+	mAddr1, err := address.NewFromString("f02345")
+	assert.NoError(t, err)
+	mAddr2, err := address.NewFromString("f023452")
+	assert.NoError(t, err)
+
+	user, err := cli.GetUserByMiner(context.Background(), mAddr1)
 	if err != nil {
 		t.Fatalf("get miner err:%s", err)
 	}
 
-	has, err := cli.HasMiner(&auth.HasMinerRequest{
-		Miner: "f02345",
-	})
+	has, err := cli.HasMiner(context.Background(), mAddr1)
 	if err != nil {
 		fmt.Printf("err: %s\n", err.Error())
 	}
-	assert.DeepEqual(t, true, has)
+	assert.Equal(t, true, has)
 
-	has, err = cli.HasMiner(&auth.HasMinerRequest{
-		Miner: "f023452",
-	})
+	has, err = cli.HasMiner(context.Background(), mAddr2)
 	if err != nil {
 		t.Fatalf("has miner err:%s", err)
 	}
-	assert.DeepEqual(t, false, has)
+	assert.Equal(t, false, has)
 
-	exist, err := cli.MinerExistInUser(user.Name, "f02345")
+	exist, err := cli.MinerExistInUser(context.Background(), user.Name, mAddr1)
 	if err != nil {
 		t.Fatalf("check miner exist in user err:%s", err)
 	}
-	assert.DeepEqual(t, true, exist)
+	assert.Equal(t, true, exist)
 
-	exist, err = cli.MinerExistInUser(user.Name, "f023452")
+	exist, err = cli.MinerExistInUser(context.Background(), user.Name, mAddr2)
 	if err != nil {
 		t.Fatalf("check miner exist in user err:%s", err)
 	}
-	assert.DeepEqual(t, false, exist)
+	assert.Equal(t, false, exist)
 
-	user, err = cli.GetUser(&auth.GetUserRequest{
-		Name: "name2",
-	})
+	user, err = cli.GetUser(context.Background(), "name2")
 	if err != nil {
 		t.Fatalf("get user err:%s", err)
 	}
-	assert.DeepEqual(t, users[1].Name, user.Name)
+	assert.Equal(t, "name2", user.Name)
 
-	err = cli.VerifyUsers([]string{"name1", "name2"})
+	err = cli.VerifyUsers(context.Background(), []string{"name1", "name2"})
 	if err != nil {
 		t.Fatalf("verify users err:%s", err)
 	}
@@ -256,7 +262,7 @@ func TestClient_Verify(t *testing.T) {
 		t.Skip()
 	}
 
-	kps, err := cli.Tokens(0, 10)
+	kps, err := cli.Tokens(context.TODO(), 0, 10)
 	if err != nil {
 		t.Fatalf("get key-pars failed:%s", err.Error())
 	}
@@ -264,7 +270,7 @@ func TestClient_Verify(t *testing.T) {
 	ctx := context.TODO()
 	for _, kp := range kps {
 		res, err := cli.Verify(ctx, kp.Token)
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, res.Name, kp.Name)
 		assert.Equal(t, res.Perm, kp.Perm)
 	}
@@ -280,7 +286,7 @@ func TestJWTClient_ListUsers(t *testing.T) {
 	if os.Getenv("CI") == "test" {
 		t.Skip()
 	}
-	res, err := cli.ListUsers(auth.NewListUsersRequest(0, 20, 1))
+	res, err := cli.ListUsers(context.Background(), 0, 20, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
